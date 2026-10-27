@@ -1,0 +1,66 @@
+name: L.I.T.T. Repository Scan
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Generate repository health report
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.LITT_GITHUB_TOKEN || github.token }}
+    steps:
+      - name: Check GitHub access
+        run: |
+          gh api user --jq '"Authenticated as @" + .login'
+          if [ -z "${{ secrets.LITT_GITHUB_TOKEN }}" ]; then
+            echo "::warning::LITT_GITHUB_TOKEN is not configured; the fallback token may only access this repository."
+          fi
+
+      - name: Generate L.I.T.T. report
+        run: |
+          mkdir -p litt-report
+          gh api --paginate \
+            -H "Accept: application/vnd.github+json" \
+            "/user/repos?per_page=100&affiliation=owner,collaborator,organization_member&sort=updated" \
+            --jq '.[] | [
+              .full_name,
+              (.private | tostring),
+              (.archived | tostring),
+              (.default_branch // ""),
+              (.language // ""),
+              (.open_issues_count | tostring),
+              (.updated_at // ""),
+              (.html_url // "")
+            ] | @tsv' > litt-report/repositories.tsv
+
+          {
+            echo "# L.I.T.T. Repository Report"
+            echo
+            echo "Generated: $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "| Repository | Visibility | Status | Default branch | Language | Open issues | Updated |"
+            echo "|---|---|---|---|---|---:|---|"
+            while IFS=$'\t' read -r name private archived branch language issues updated url; do
+              [ -z "$name" ] && continue
+              visibility="public"
+              [ "$private" = "true" ] && visibility="private"
+              status="active"
+              [ "$archived" = "true" ] && status="archived"
+              echo "| [$name]($url) | $visibility | $status | \`$branch\` | ${language:-N/A} | $issues | $updated |"
+            done < litt-report/repositories.tsv
+          } > litt-report/report.md
+
+          cat litt-report/report.md
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: litt-repository-report
+          path: litt-report/
+          retention-days: 30
